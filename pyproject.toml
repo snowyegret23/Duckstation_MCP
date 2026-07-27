@@ -8,6 +8,11 @@ dependencies = [
     "psutil>=5.9",
 ]
 
+[project.optional-dependencies]
+xinput = [
+    "vgamepad==0.1.0; platform_system == 'Windows'",
+]
+
 [project.scripts]
 duckstation-mcp = "duckstation_mcp.__main__:main"
 

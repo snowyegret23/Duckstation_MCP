@@ -13,7 +13,10 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from . import background_input
+from . import keyboard_input
 from . import process as ds_process
+from . import window_capture
 from .gdb_client import BP_TYPE_MAP, GDBClient, GDBError, REG_NAMES
 from .log_reader import filter_log, resolve_log_path, tail_log
 
@@ -293,6 +296,189 @@ def filter_log_lines(
 def list_duckstation_processes() -> dict:
     """List currently-running DuckStation processes (pid, name, exe path)."""
     return _ok(processes=ds_process.find_processes())
+
+
+@mcp.tool()
+def launch_duckstation(exe_path: str, game_path: str | None = None, extra_args: list[str] | None = None) -> dict:
+    """Launch DuckStation without activating its window."""
+    return ds_process.launch(exe_path, game_path, extra_args)
+
+
+@mcp.tool()
+def list_duckstation_windows(pid: int | None = None) -> dict:
+    """List visible DuckStation windows without changing focus or window state."""
+    try:
+        if pid is not None:
+            return _ok(pid=pid, windows=window_capture.list_windows(pid))
+        processes = ds_process.find_processes()
+        windows = [window for process in processes for window in window_capture.list_windows(int(process["pid"]))]
+        return _ok(windows=windows)
+    except OSError as e:
+        return _err(str(e), pid=pid)
+
+
+@mcp.tool()
+def capture_duckstation_window(output_path: str | None = None, pid: int | None = None) -> dict:
+    """Capture an inactive or covered DuckStation window without restoring or activating it."""
+    try:
+        if pid is None:
+            processes = ds_process.find_processes()
+            if not processes:
+                return _err("no DuckStation process found")
+            pids = [int(process["pid"]) for process in processes]
+        else:
+            pids = [pid]
+        window = window_capture.find_window(pids)
+        out = window_capture.default_output_path() if output_path is None else Path(output_path)
+        if not out.is_absolute():
+            out = Path.cwd() / out
+        result = window_capture.capture_window(int(window["hwnd"], 16), out)
+        return _ok(pid=window["pid"], title=window["title"], class_name=window["class_name"], **result)
+    except (OSError, ValueError, RuntimeError) as e:
+        return _err(str(e), pid=pid, output_path=output_path)
+
+
+@mcp.tool()
+def configure_background_input(config_path: str | None = None, device_index: int = 0) -> dict:
+    """Enable background input and add keyboard plus optional XInput bindings."""
+    try:
+        return _ok(**background_input.configure_background_input(config_path, device_index))
+    except (OSError, ValueError) as e:
+        return _err(str(e), config_path=config_path, device_index=device_index)
+
+
+@mcp.tool()
+def background_input_status() -> dict:
+    """Return keyboard and optional XInput backend state without activating DuckStation."""
+    return _ok(
+        default_backend="auto",
+        auto_fallback="keyboard",
+        xinput_module_available=background_input.xinput_module_available(),
+        xinput=background_input.gamepad.status(),
+        keyboard_backend="PostMessageW",
+        foreground_activation=False,
+    )
+
+
+@mcp.tool()
+def input_button_press(
+    button: str,
+    duration_ms: int = 100,
+    backend: str = "auto",
+    pid: int | None = None,
+    config_path: str | None = None,
+) -> dict:
+    """Press and release a button through keyboard or optional XInput, without focus."""
+    try:
+        selected, fallback_reason = background_input.choose_backend(backend)
+        if selected == "xinput":
+            return _ok(selected_backend=selected, fallback_reason=fallback_reason, **background_input.gamepad.press(button, duration_ms))
+        processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
+        if not processes:
+            return _err("no DuckStation process found")
+        window = window_capture.find_window([int(process["pid"]) for process in processes])
+        input_window = window_capture.find_input_window(int(window["hwnd"], 16))
+        path = Path(config_path) if config_path else next(
+            (candidate for candidate in background_input.default_config_candidates() if candidate.exists()),
+            None,
+        )
+        return _ok(
+            selected_backend=selected,
+            fallback_reason=fallback_reason,
+            input_target=input_window,
+            **keyboard_input.keyboard.press(int(input_window["hwnd"], 16), button, duration_ms, path),
+        )
+    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+        return _err(str(e), button=button, backend=backend)
+
+
+@mcp.tool()
+def input_buttons_send(
+    buttons: dict[str, bool | None],
+    backend: str = "auto",
+    pid: int | None = None,
+    config_path: str | None = None,
+) -> dict:
+    """Set multiple button states through keyboard or optional XInput."""
+    try:
+        selected, fallback_reason = background_input.choose_backend(backend)
+        if selected == "xinput":
+            return _ok(selected_backend=selected, fallback_reason=fallback_reason, **background_input.gamepad.set_buttons(buttons))
+        processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
+        if not processes:
+            return _err("no DuckStation process found")
+        window = window_capture.find_window([int(process["pid"]) for process in processes])
+        input_window = window_capture.find_input_window(int(window["hwnd"], 16))
+        path = Path(config_path) if config_path else next(
+            (candidate for candidate in background_input.default_config_candidates() if candidate.exists()),
+            None,
+        )
+        return _ok(
+            selected_backend=selected,
+            fallback_reason=fallback_reason,
+            input_target=input_window,
+            **keyboard_input.keyboard.set_buttons(int(input_window["hwnd"], 16), buttons, path),
+        )
+    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+        return _err(str(e), buttons=buttons, backend=backend)
+
+
+@mcp.tool()
+def input_analog_send(
+    x: float,
+    y: float,
+    stick: str = "left",
+    backend: str = "auto",
+    pid: int | None = None,
+    config_path: str | None = None,
+) -> dict:
+    """Set an analog stick through XInput or its configured keyboard directions."""
+    try:
+        selected, fallback_reason = background_input.choose_backend(backend)
+        if selected == "xinput":
+            return _ok(selected_backend=selected, fallback_reason=fallback_reason, **background_input.gamepad.set_analog(x, y, stick))
+        processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
+        if not processes:
+            return _err("no DuckStation process found")
+        window = window_capture.find_window([int(process["pid"]) for process in processes])
+        input_window = window_capture.find_input_window(int(window["hwnd"], 16))
+        path = Path(config_path) if config_path else next(
+            (candidate for candidate in background_input.default_config_candidates() if candidate.exists()),
+            None,
+        )
+        return _ok(
+            selected_backend=selected,
+            fallback_reason=fallback_reason,
+            input_target=input_window,
+            **keyboard_input.keyboard.set_analog(int(input_window["hwnd"], 16), x, y, stick, path),
+        )
+    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+        return _err(str(e), x=x, y=y, stick=stick, backend=backend)
+
+
+@mcp.tool()
+def input_reset(backend: str = "auto", pid: int | None = None) -> dict:
+    """Release keyboard and/or virtual controller state without focusing DuckStation."""
+    try:
+        requested = backend.strip().lower()
+        if requested not in {"auto", "keyboard", "xinput"}:
+            raise ValueError("backend must be 'auto', 'keyboard', or 'xinput'")
+        if requested == "xinput":
+            return _ok(selected_backend="xinput", **background_input.gamepad.reset())
+        processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
+        keyboard_result = None
+        if processes:
+            window = window_capture.find_window([int(process["pid"]) for process in processes])
+            input_window = window_capture.find_input_window(int(window["hwnd"], 16))
+            keyboard_result = keyboard_input.keyboard.reset(int(input_window["hwnd"], 16))
+        xinput_result = (
+            background_input.gamepad.reset()
+            if requested == "auto" and background_input.gamepad.status()["connected"]
+            else None
+        )
+        return _ok(keyboard=keyboard_result, xinput=xinput_result, foreground_activation=False)
+    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+        return _err(str(e), backend=backend)
 
 
 @mcp.tool()

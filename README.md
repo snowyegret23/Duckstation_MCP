@@ -17,6 +17,8 @@ DuckStation MCP is a Windows-focused Model Context Protocol server for debugging
 - Add and remove execution, read, write, and access breakpoints.
 - Locate, tail, and filter DuckStation logs by level, channel, or text.
 - List and terminate DuckStation processes when files are locked.
+- Capture covered or inactive DuckStation windows without activating them.
+- Send controller actions through targeted keyboard messages or an optional virtual XInput pad.
 
 ## Requirements
 
@@ -44,12 +46,35 @@ The equivalent GUI options are under **Settings > Advanced > Debugging (Tweaks)*
 
 The default log path is `%LOCALAPPDATA%\DuckStation\duckstation.log`.
 
+## Background capture and input
+
+`configure_background_input` preserves existing Pad 1 bindings, enables
+DuckStation background input, and adds keyboard plus XInput mappings. Restart
+DuckStation only when the tool reports `restart_required=true`.
+
+The input tools accept `backend="auto"`, `"keyboard"`, or `"xinput"`.
+`auto` tries the optional XInput backend and falls back to targeted
+`PostMessageW` keyboard events when `vgamepad` or its driver is unavailable.
+The keyboard path posts directly to DuckStation's native render child and does
+not activate, restore, or foreground the window.
+
+`capture_duckstation_window` uses `PrintWindow(PW_RENDERFULLCONTENT)` without
+changing the target window state. Hardware-rendered surfaces can reject
+`PrintWindow`; the tool returns an error instead of bringing the window forward.
+
 ## Installation
 
 Open PowerShell in the repository directory:
 
 ```powershell
 python -m pip install -e .
+```
+
+The keyboard backend has no extra dependency. Optional XInput support uses
+`vgamepad` and an installed ViGEmBus driver:
+
+```powershell
+python -m pip install -e ".[xinput]"
 ```
 
 Run the server directly:

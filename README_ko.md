@@ -17,6 +17,8 @@ DuckStation MCP는 [DuckStation](https://github.com/stenzek/duckstation)의 내�
 - 실행, 읽기, 쓰기, 접근 브레이크포인트 추가 및 제거
 - 레벨, 채널, 문자열을 기준으로 DuckStation 로그 조회 및 필터링
 - 파일 잠금을 해제하기 위한 DuckStation 프로세스 조회 및 종료
+- DuckStation 창을 활성화하지 않고 가려진 창 또는 비활성 창 캡처
+- 대상 창 키보드 메시지 또는 선택적 가상 XInput 패드를 통한 게임 조작
 
 ## 요구 사항
 
@@ -44,12 +46,38 @@ GUI에서는 **Settings > Advanced > Debugging (Tweaks)**에서 같은 옵션을
 
 기본 로그 경로는 `%LOCALAPPDATA%\DuckStation\duckstation.log`입니다.
 
+## 백그라운드 캡처 및 입력
+
+`configure_background_input`은 기존 1번 패드 바인딩을 보존하면서
+DuckStation의 백그라운드 입력을 활성화하고 키보드와 XInput 바인딩을
+추가합니다. 도구가 `restart_required=true`를 반환한 경우에만
+DuckStation을 다시 시작해야 합니다.
+
+입력 도구의 `backend`에는 `auto`, `keyboard`, `xinput`을 지정할 수
+있습니다. `auto`는 선택적 XInput 백엔드를 먼저 확인하고 `vgamepad`
+모듈 또는 드라이버를 사용할 수 없으면 대상 창에 보내는
+`PostMessageW` 키보드 입력으로 자동 전환합니다. 키보드 경로는
+DuckStation의 네이티브 렌더 자식 창에 직접 메시지를 보내며 창을
+활성화하거나 복원하거나 전경으로 가져오지 않습니다.
+
+`capture_duckstation_window`는 대상 창 상태를 바꾸지 않고
+`PrintWindow(PW_RENDERFULLCONTENT)`를 사용합니다. 하드웨어 렌더링
+표면이 `PrintWindow`를 거부하면 창을 앞으로 가져오지 않고 오류를
+반환합니다.
+
 ## 설치
 
 PowerShell에서 저장소 폴더로 이동한 뒤 실행합니다.
 
 ```powershell
 python -m pip install -e .
+```
+
+키보드 백엔드에는 추가 의존성이 없습니다. XInput 지원은 선택 사항이며
+`vgamepad`와 설치된 ViGEmBus 드라이버를 사용합니다.
+
+```powershell
+python -m pip install -e ".[xinput]"
 ```
 
 서버를 직접 실행하려면 다음 명령을 사용합니다.
