@@ -5,7 +5,7 @@
 DuckStation MCP is a Windows-focused Model Context Protocol server for debugging PlayStation games through [DuckStation](https://github.com/stenzek/duckstation)'s built-in GDB Remote Serial Protocol server. It exposes execution control, register access, memory inspection, breakpoints, process management, and log analysis as MCP tools.
 
 > [!IMPORTANT]
-> DuckStation must have its GDB server enabled and a game loaded before the MCP server can connect. This project uses DuckStation's existing GDB server and does not require modifying or rebuilding DuckStation.
+> Basic debugging uses DuckStation's existing GDB server. Native background input and rendered-frame screenshots require the companion patched DuckStation build that implements the `qDuckStation` commands used by this server.
 
 ## Features
 
@@ -18,7 +18,8 @@ DuckStation MCP is a Windows-focused Model Context Protocol server for debugging
 - Locate, tail, and filter DuckStation logs by level, channel, or text.
 - List and terminate DuckStation processes when files are locked.
 - Capture covered or inactive DuckStation windows without activating them.
-- Send controller actions through targeted keyboard messages or an optional virtual XInput pad.
+- Send controller actions through native `qDuckStation` input, an optional virtual XInput pad, or targeted keyboard messages.
+- Capture the rendered frame natively through `qDuckStation`, with inactive-window fallback.
 
 ## Requirements
 
@@ -52,15 +53,17 @@ The default log path is `%LOCALAPPDATA%\DuckStation\duckstation.log`.
 DuckStation background input, and adds keyboard plus XInput mappings. Restart
 DuckStation only when the tool reports `restart_required=true`.
 
-The input tools accept `backend="auto"`, `"keyboard"`, or `"xinput"`.
-`auto` tries the optional XInput backend and falls back to targeted
+The input tools accept `backend="auto"`, `"native"`, `"keyboard"`, or
+`"xinput"`. `auto` uses an already-connected `qDuckStation` GDB client first,
+then tries the optional XInput backend, and finally falls back to targeted
 `PostMessageW` keyboard events when `vgamepad` or its driver is unavailable.
 The keyboard path posts directly to DuckStation's native render child and does
 not activate, restore, or foreground the window.
 
-`capture_duckstation_window` uses `PrintWindow(PW_RENDERFULLCONTENT)` without
-changing the target window state. Hardware-rendered surfaces can reject
-`PrintWindow`; the tool returns an error instead of bringing the window forward.
+`take_screenshot` captures the rendered frame through `qDuckStation` when GDB
+is connected. Otherwise it falls back to `capture_duckstation_window`, which
+uses `PrintWindow(PW_RENDERFULLCONTENT)` without changing the target window
+state. Neither path brings DuckStation forward.
 
 ## Installation
 

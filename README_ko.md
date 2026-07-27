@@ -5,7 +5,7 @@
 DuckStation MCP는 [DuckStation](https://github.com/stenzek/duckstation)의 내장 GDB Remote Serial Protocol 서버를 통해 PlayStation 게임을 디버깅하는 Windows 중심의 Model Context Protocol 서버입니다. 실행 제어, 레지스터 접근, 메모리 조사, 브레이크포인트, 프로세스 관리, 로그 분석 기능을 MCP 도구로 제공합니다.
 
 > [!IMPORTANT]
-> MCP 서버를 연결하기 전에 DuckStation의 GDB 서버를 활성화하고 게임을 불러와야 합니다. 이 프로젝트는 DuckStation의 기존 GDB 서버를 사용하므로 DuckStation 소스를 수정하거나 다시 빌드할 필요가 없습니다.
+> 기본 디버깅은 DuckStation의 기존 GDB 서버를 사용합니다. 네이티브 백그라운드 입력과 렌더 프레임 스크린샷에는 이 서버의 `qDuckStation` 명령을 구현한 함께 패치된 DuckStation 빌드가 필요합니다.
 
 ## 주요 기능
 
@@ -18,7 +18,8 @@ DuckStation MCP는 [DuckStation](https://github.com/stenzek/duckstation)의 내�
 - 레벨, 채널, 문자열을 기준으로 DuckStation 로그 조회 및 필터링
 - 파일 잠금을 해제하기 위한 DuckStation 프로세스 조회 및 종료
 - DuckStation 창을 활성화하지 않고 가려진 창 또는 비활성 창 캡처
-- 대상 창 키보드 메시지 또는 선택적 가상 XInput 패드를 통한 게임 조작
+- 네이티브 `qDuckStation` 입력, 선택적 가상 XInput 패드, 대상 창 키보드 메시지를 통한 게임 조작
+- `qDuckStation`을 통한 렌더 프레임 직접 캡처 및 비활성 창 폴백
 
 ## 요구 사항
 
@@ -53,17 +54,17 @@ DuckStation의 백그라운드 입력을 활성화하고 키보드와 XInput 바
 추가합니다. 도구가 `restart_required=true`를 반환한 경우에만
 DuckStation을 다시 시작해야 합니다.
 
-입력 도구의 `backend`에는 `auto`, `keyboard`, `xinput`을 지정할 수
-있습니다. `auto`는 선택적 XInput 백엔드를 먼저 확인하고 `vgamepad`
-모듈 또는 드라이버를 사용할 수 없으면 대상 창에 보내는
-`PostMessageW` 키보드 입력으로 자동 전환합니다. 키보드 경로는
-DuckStation의 네이티브 렌더 자식 창에 직접 메시지를 보내며 창을
-활성화하거나 복원하거나 전경으로 가져오지 않습니다.
+입력 도구의 `backend`에는 `auto`, `native`, `keyboard`, `xinput`을
+지정할 수 있습니다. `auto`는 이미 연결된 `qDuckStation` GDB 클라이언트,
+선택적 XInput, 대상 창 `PostMessageW` 키보드 입력 순서로 시도합니다.
+`vgamepad` 모듈 또는 드라이버가 없으면 키보드로 자동 전환합니다.
+키보드 경로는 DuckStation의 네이티브 렌더 자식 창에 직접 메시지를
+보내며 창을 활성화하거나 복원하거나 전경으로 가져오지 않습니다.
 
-`capture_duckstation_window`는 대상 창 상태를 바꾸지 않고
-`PrintWindow(PW_RENDERFULLCONTENT)`를 사용합니다. 하드웨어 렌더링
-표면이 `PrintWindow`를 거부하면 창을 앞으로 가져오지 않고 오류를
-반환합니다.
+`take_screenshot`은 GDB 연결 시 `qDuckStation`으로 렌더 프레임을 직접
+캡처합니다. 연결되지 않았으면 대상 창 상태를 바꾸지 않는
+`capture_duckstation_window`의 `PrintWindow(PW_RENDERFULLCONTENT)` 경로로
+폴백합니다. 어느 경로도 DuckStation 창을 앞으로 가져오지 않습니다.
 
 ## 설치
 

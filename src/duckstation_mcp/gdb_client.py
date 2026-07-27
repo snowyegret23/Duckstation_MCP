@@ -409,3 +409,11 @@ class GDBClient:
             raise GDBError(
                 f"remove_breakpoint(0x{address:08X}, {kind}) failed: {reply.decode('ascii', errors='replace')}"
             )
+
+    def duckstation_command(self, command: str, timeout: float = 30.0) -> str:
+        with self._lock:
+            reply = self._command(f"qDuckStation:{command}".encode("ascii"), timeout=timeout)
+        text = reply.decode("ascii", errors="replace")
+        if text.startswith("ERR"):
+            raise GDBError(text)
+        return text

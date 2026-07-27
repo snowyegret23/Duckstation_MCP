@@ -8,6 +8,7 @@ via `log_reader`, and control the DuckStation process via `process`.
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,26 @@ mcp = FastMCP("duckstation-mcp")
 
 # Single GDB connection shared across tool calls.
 _client = GDBClient()
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+_NATIVE_BUTTON_BINDINGS = {
+    "up": "Up",
+    "down": "Down",
+    "left": "Left",
+    "right": "Right",
+    "triangle": "Triangle",
+    "circle": "Circle",
+    "cross": "Cross",
+    "square": "Square",
+    "select": "Select",
+    "start": "Start",
+    "l1": "L1",
+    "l2": "L2",
+    "l3": "L3",
+    "r1": "R1",
+    "r2": "R2",
+    "r3": "R3",
+}
 
 
 def _ok(**kw: Any) -> dict[str, Any]:
@@ -43,6 +64,59 @@ def _ok(**kw: Any) -> dict[str, Any]:
 
 def _err(msg: str, **kw: Any) -> dict[str, Any]:
     return {"ok": False, "error": msg, **kw}
+
+
+def _select_input_backend(backend: str) -> tuple[str, str | None]:
+    requested = backend.strip().lower()
+    if requested not in {"auto", "native", "keyboard", "xinput"}:
+        raise ValueError("backend must be 'auto', 'native', 'keyboard', or 'xinput'")
+    if requested == "native":
+        if not _client.connected:
+            raise GDBError("native input requires an active DuckStation GDB connection")
+        return "native", None
+    if requested == "auto" and _client.connected:
+        return "native", None
+    selected, fallback_reason = background_input.choose_backend(requested)
+    if requested == "auto" and fallback_reason is None:
+        fallback_reason = "native input unavailable because the GDB client is not connected"
+    elif requested == "auto":
+        fallback_reason = (
+            "native input unavailable because the GDB client is not connected; "
+            f"{fallback_reason}"
+        )
+    return selected, fallback_reason
+
+
+def _native_input_set(controller: int, binding: str, value: float) -> str:
+    if controller < 0:
+        raise ValueError("controller must be non-negative")
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("native input value must be between 0.0 and 1.0")
+    value_milli = int(round(value * 1000.0))
+    return _client.duckstation_command(f"input:{controller}:{binding}:{value_milli}")
+
+
+def _native_button_name(button: str) -> tuple[str, str]:
+    normalized = background_input.normalize_button(button)
+    binding = _NATIVE_BUTTON_BINDINGS.get(normalized)
+    if binding is None:
+        raise ValueError(f"button {button!r} is not available on the active PlayStation controller")
+    return normalized, binding
+
+
+def _native_analog_values(x: float, y: float, stick: str) -> dict[str, float]:
+    side = stick.strip().lower()
+    if side not in {"left", "right"}:
+        raise ValueError("stick must be 'left' or 'right'")
+    if not -1.0 <= x <= 1.0 or not -1.0 <= y <= 1.0:
+        raise ValueError("x and y must be between -1.0 and 1.0")
+    prefix = "L" if side == "left" else "R"
+    return {
+        f"{prefix}Left": max(0.0, -x),
+        f"{prefix}Right": max(0.0, x),
+        f"{prefix}Up": max(0.0, y),
+        f"{prefix}Down": max(0.0, -y),
+    }
 
 
 # ----------------------------------------------------------------------
@@ -339,6 +413,47 @@ def capture_duckstation_window(output_path: str | None = None, pid: int | None =
 
 
 @mcp.tool()
+def take_screenshot(output_path: str | None = None, pid: int | None = None) -> dict:
+    """Capture the emulated frame natively when GDB is connected, otherwise use inactive window capture."""
+    try:
+        if output_path is None:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            out = _PROJECT_ROOT / "logs" / "screenshots" / f"duckstation-{stamp}.png"
+        else:
+            out = Path(output_path)
+            if not out.is_absolute():
+                out = Path.cwd() / out
+        out = out.resolve()
+        if out.suffix.lower() != ".png":
+            raise ValueError("DuckStation native screenshots require a .png output path")
+
+        if not _client.connected:
+            result = capture_duckstation_window(str(out), pid)
+            return {**result, "fallback": "inactive-window"}
+
+        out.parent.mkdir(parents=True, exist_ok=True)
+        reply = _client.duckstation_command(f"screenshot:{str(out).encode('utf-8').hex()}", timeout=30.0)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and not out.is_file():
+            time.sleep(0.05)
+        if not out.is_file():
+            return _err(
+                "native screenshot command returned but no file was created",
+                path=str(out),
+                reply=reply,
+            )
+        return _ok(
+            path=str(out),
+            size=out.stat().st_size,
+            method="qDuckStation screenshot",
+            reply=reply,
+            foreground_activation=False,
+        )
+    except (GDBError, OSError, TimeoutError, ValueError) as e:
+        return _err(str(e), output_path=output_path)
+
+
+@mcp.tool()
 def configure_background_input(config_path: str | None = None, device_index: int = 0) -> dict:
     """Enable background input and add keyboard plus optional XInput bindings."""
     try:
@@ -349,10 +464,11 @@ def configure_background_input(config_path: str | None = None, device_index: int
 
 @mcp.tool()
 def background_input_status() -> dict:
-    """Return keyboard and optional XInput backend state without activating DuckStation."""
+    """Return native, keyboard, and optional XInput backend state without activating DuckStation."""
     return _ok(
         default_backend="auto",
-        auto_fallback="keyboard",
+        auto_order=["native", "xinput", "keyboard"],
+        native={"available": _client.connected, "backend": "qDuckStation"},
         xinput_module_available=background_input.xinput_module_available(),
         xinput=background_input.gamepad.status(),
         keyboard_backend="PostMessageW",
@@ -367,10 +483,30 @@ def input_button_press(
     backend: str = "auto",
     pid: int | None = None,
     config_path: str | None = None,
+    controller: int = 0,
 ) -> dict:
-    """Press and release a button through keyboard or optional XInput, without focus."""
+    """Press and release a button through native input, keyboard, or optional XInput without focus."""
     try:
-        selected, fallback_reason = background_input.choose_backend(backend)
+        selected, fallback_reason = _select_input_backend(backend)
+        if selected == "native":
+            if not 1 <= duration_ms <= 10_000:
+                raise ValueError("duration_ms must be between 1 and 10000")
+            normalized, binding = _native_button_name(button)
+            press_reply = _native_input_set(controller, binding, 1.0)
+            try:
+                time.sleep(duration_ms / 1000.0)
+            finally:
+                release_reply = _native_input_set(controller, binding, 0.0)
+            return _ok(
+                selected_backend="native",
+                fallback_reason=fallback_reason,
+                controller=controller,
+                button=normalized,
+                binding=binding,
+                duration_ms=duration_ms,
+                replies=[press_reply, release_reply],
+                foreground_activation=False,
+            )
         if selected == "xinput":
             return _ok(selected_backend=selected, fallback_reason=fallback_reason, **background_input.gamepad.press(button, duration_ms))
         processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
@@ -388,7 +524,7 @@ def input_button_press(
             input_target=input_window,
             **keyboard_input.keyboard.press(int(input_window["hwnd"], 16), button, duration_ms, path),
         )
-    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+    except (background_input.BackgroundInputError, GDBError, OSError, TimeoutError, ValueError) as e:
         return _err(str(e), button=button, backend=backend)
 
 
@@ -398,10 +534,27 @@ def input_buttons_send(
     backend: str = "auto",
     pid: int | None = None,
     config_path: str | None = None,
+    controller: int = 0,
 ) -> dict:
-    """Set multiple button states through keyboard or optional XInput."""
+    """Set multiple button states through native input, keyboard, or optional XInput."""
     try:
-        selected, fallback_reason = background_input.choose_backend(backend)
+        selected, fallback_reason = _select_input_backend(backend)
+        if selected == "native":
+            replies: dict[str, str] = {}
+            for button, pressed in buttons.items():
+                normalized, binding = _native_button_name(button)
+                if pressed is None:
+                    continue
+                if not isinstance(pressed, bool):
+                    raise ValueError(f"button state for {button!r} must be true, false, or null")
+                replies[normalized] = _native_input_set(controller, binding, 1.0 if pressed else 0.0)
+            return _ok(
+                selected_backend="native",
+                fallback_reason=fallback_reason,
+                controller=controller,
+                replies=replies,
+                foreground_activation=False,
+            )
         if selected == "xinput":
             return _ok(selected_backend=selected, fallback_reason=fallback_reason, **background_input.gamepad.set_buttons(buttons))
         processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
@@ -419,7 +572,7 @@ def input_buttons_send(
             input_target=input_window,
             **keyboard_input.keyboard.set_buttons(int(input_window["hwnd"], 16), buttons, path),
         )
-    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+    except (background_input.BackgroundInputError, GDBError, OSError, TimeoutError, ValueError) as e:
         return _err(str(e), buttons=buttons, backend=backend)
 
 
@@ -431,10 +584,27 @@ def input_analog_send(
     backend: str = "auto",
     pid: int | None = None,
     config_path: str | None = None,
+    controller: int = 0,
 ) -> dict:
-    """Set an analog stick through XInput or its configured keyboard directions."""
+    """Set an analog stick through native input, XInput, or configured keyboard directions."""
     try:
-        selected, fallback_reason = background_input.choose_backend(backend)
+        selected, fallback_reason = _select_input_backend(backend)
+        if selected == "native":
+            values = _native_analog_values(x, y, stick)
+            replies = {
+                binding: _native_input_set(controller, binding, value)
+                for binding, value in values.items()
+            }
+            return _ok(
+                selected_backend="native",
+                fallback_reason=fallback_reason,
+                controller=controller,
+                stick=stick.strip().lower(),
+                x=x,
+                y=y,
+                replies=replies,
+                foreground_activation=False,
+            )
         if selected == "xinput":
             return _ok(selected_backend=selected, fallback_reason=fallback_reason, **background_input.gamepad.set_analog(x, y, stick))
         processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
@@ -452,17 +622,27 @@ def input_analog_send(
             input_target=input_window,
             **keyboard_input.keyboard.set_analog(int(input_window["hwnd"], 16), x, y, stick, path),
         )
-    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+    except (background_input.BackgroundInputError, GDBError, OSError, TimeoutError, ValueError) as e:
         return _err(str(e), x=x, y=y, stick=stick, backend=backend)
 
 
 @mcp.tool()
-def input_reset(backend: str = "auto", pid: int | None = None) -> dict:
+def input_reset(backend: str = "auto", pid: int | None = None, controller: int = 0) -> dict:
     """Release keyboard and/or virtual controller state without focusing DuckStation."""
     try:
         requested = backend.strip().lower()
-        if requested not in {"auto", "keyboard", "xinput"}:
-            raise ValueError("backend must be 'auto', 'keyboard', or 'xinput'")
+        if requested not in {"auto", "native", "keyboard", "xinput"}:
+            raise ValueError("backend must be 'auto', 'native', 'keyboard', or 'xinput'")
+        native_result = None
+        if requested == "native" or (requested == "auto" and _client.connected):
+            native_result = _client.duckstation_command(f"input-reset:{controller}")
+            if requested == "native":
+                return _ok(
+                    selected_backend="native",
+                    controller=controller,
+                    reply=native_result,
+                    foreground_activation=False,
+                )
         if requested == "xinput":
             return _ok(selected_backend="xinput", **background_input.gamepad.reset())
         processes = ds_process.find_processes() if pid is None else [{"pid": pid}]
@@ -476,8 +656,13 @@ def input_reset(backend: str = "auto", pid: int | None = None) -> dict:
             if requested == "auto" and background_input.gamepad.status()["connected"]
             else None
         )
-        return _ok(keyboard=keyboard_result, xinput=xinput_result, foreground_activation=False)
-    except (background_input.BackgroundInputError, OSError, ValueError) as e:
+        return _ok(
+            native=native_result,
+            keyboard=keyboard_result,
+            xinput=xinput_result,
+            foreground_activation=False,
+        )
+    except (background_input.BackgroundInputError, GDBError, OSError, TimeoutError, ValueError) as e:
         return _err(str(e), backend=backend)
 
 
