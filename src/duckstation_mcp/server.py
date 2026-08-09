@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from . import background_input
 from . import keyboard_input
@@ -32,7 +32,7 @@ PSX_REGIONS: dict[str, tuple[int, int]] = {
     "bios":     (0x1FC00000, 0x00080000),   # 512 KB BIOS ROM
 }
 
-mcp = FastMCP("duckstation-mcp")
+mcp = MCPServer("duckstation-mcp")
 
 # Single GDB connection shared across tool calls.
 _client = GDBClient()
