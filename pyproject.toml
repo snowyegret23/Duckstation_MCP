@@ -10,7 +10,7 @@ dependencies = [
 
 [project.optional-dependencies]
 xinput = [
-    "vgamepad==0.1.0; platform_system == 'Windows'",
+    "vgamepad==0.2.0; platform_system == 'Windows'",
 ]
 
 [project.scripts]
